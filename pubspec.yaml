@@ -1,0 +1,55 @@
+name: bugme_web
+description: "BugMe - Personal budget tracker (Web PWA)."
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Database (drift_flutter handles web via WASM SQLite automatically)
+  drift: ^2.22.0
+  drift_flutter: ^0.2.2
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # AI
+  google_generative_ai: ^0.4.0
+
+  # Charts and Animations
+  fl_chart: ^0.70.2
+  flutter_animate: ^4.5.2
+
+  # Utilities
+  intl: ^0.20.1
+  uuid: ^4.5.1
+  shared_preferences: ^2.3.5
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  cupertino_icons: ^1.0.8
+  excel: ^4.0.6
+  share_plus: ^10.0.2
+  file_picker: ^10.3.10
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.14
+  drift_dev: ^2.22.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/logo.png
+    - assets/images/logo_transparent.png
+    - assets/images/launcher_icon.png
+    - assets/images/splash_logo.png
+    - assets/images/android12_splash.png
+    - assets/images/adaptive_fg.png
