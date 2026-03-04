@@ -10,6 +10,7 @@ import '../../data/database/app_database.dart';
 import '../../data/models/parsed_entry.dart';
 import '../../data/providers/app_providers.dart';
 import '../../data/services/gemini_service.dart';
+import '../../data/services/web_audio_service.dart';
 
 class VoiceEntryScreen extends ConsumerStatefulWidget {
   const VoiceEntryScreen({super.key});
@@ -20,15 +21,84 @@ class VoiceEntryScreen extends ConsumerStatefulWidget {
 
 class _VoiceEntryScreenState extends ConsumerState<VoiceEntryScreen> {
   final TextEditingController _inputCtrl = TextEditingController();
-  bool _isParsing       = false;
+  final WebAudioService _audioService = WebAudioService();
+  bool _isParsing   = false;
+  bool _isRecording = false;
+  String _statusMsg = '';
   List<ParsedEntry> _parsedList = [];
   String? _error;
-  String _lastInput     = '';
+  String _lastInput = '';
 
   @override
   void dispose() {
+    _audioService.dispose();
     _inputCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _startRecording() async {
+    setState(() { _error = null; });
+    try {
+      await _audioService.start();
+      if (mounted) setState(() => _isRecording = true);
+    } on WebAudioException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Could not start recording: $e');
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    if (!_isRecording) return;
+    setState(() {
+      _isRecording = false;
+      _isParsing = true;
+      _statusMsg = 'Collecting audio…';
+      _error = null;
+      _parsedList = [];
+    });
+    try {
+      // ── Stage 1: collect audio bytes ────────────────────────────────
+      debugPrint('[Voice] Awaiting audio bytes from MediaRecorder…');
+      final (bytes, mime) = await _audioService.stop()
+          .timeout(const Duration(seconds: 15),
+              onTimeout: () => throw WebAudioException(
+                  'Timed out collecting audio (15s). Try again.'));
+      debugPrint('[Voice] Got ${bytes.length} bytes, mime=$mime');
+
+      if (!mounted) return;
+      setState(() => _statusMsg = 'Sending to Gemini…');
+
+      // ── Stage 2: Gemini transcription + parsing ─────────────────────
+      debugPrint('[Voice] Calling parseAudioExpenses…');
+      final results = await ref
+          .read(geminiServiceProvider)
+          .parseAudioExpenses(bytes, mime)
+          .timeout(const Duration(seconds: 30),
+              onTimeout: () => throw GeminiException(
+                  'Gemini timed out (30s). Check your API key and network.'));
+      debugPrint('[Voice] Gemini returned ${results.length} entries.');
+
+      if (!mounted) return;
+      if (results.isEmpty) {
+        setState(() {
+          _error = "Couldn't detect any expenses. Try speaking clearly, e.g. \"spent 200 on lunch\".";
+          _isParsing = false;
+          _statusMsg = '';
+        });
+        return;
+      }
+      setState(() { _parsedList = results; _isParsing = false; _statusMsg = ''; });
+    } on GeminiException catch (e) {
+      debugPrint('[Voice] GeminiException: ${e.message}');
+      if (mounted) setState(() { _error = e.message; _isParsing = false; _statusMsg = ''; });
+    } on WebAudioException catch (e) {
+      debugPrint('[Voice] WebAudioException: ${e.message}');
+      if (mounted) setState(() { _error = e.message; _isParsing = false; _statusMsg = ''; });
+    } catch (e) {
+      debugPrint('[Voice] Unexpected error: $e');
+      if (mounted) setState(() { _error = e.toString(); _isParsing = false; _statusMsg = ''; });
+    }
   }
 
   Future<void> _callGemini() async {
@@ -91,10 +161,11 @@ class _VoiceEntryScreenState extends ConsumerState<VoiceEntryScreen> {
     final currency = ref.watch(currencyProvider);
     final bgColor  = isDark ? const Color(0xFF0A0A0A) : const Color(0xFFF5F5F5);
 
-    // autoStartRecordingProvider is a no-op on web — just consume it silently.
+    // On web, autoStartRecordingProvider triggers mic recording.
     ref.listen<bool>(autoStartRecordingProvider, (_, shouldStart) {
       if (shouldStart) {
         ref.read(autoStartRecordingProvider.notifier).state = false;
+        _startRecording();
       }
     });
 
@@ -115,6 +186,38 @@ class _VoiceEntryScreenState extends ConsumerState<VoiceEntryScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+
+                  // ── Mic recording card ─────────────────────────────────
+                  _MicCard(
+                    isRecording: _isRecording,
+                    isParsing: _isParsing,
+                    statusMsg: _statusMsg,
+                    cs: cs,
+                    tt: tt,
+                    isDark: isDark,
+                    onTap: _isParsing
+                        ? null
+                        : (_isRecording ? _stopRecording : _startRecording),
+                  ).animate().fadeIn(duration: 300.ms),
+
+                  const SizedBox(height: 14),
+
+                  // ── OR divider ─────────────────────────────────────────
+                  Row(children: [
+                    Expanded(child: Divider(
+                        color: cs.outlineVariant.withAlpha(100))),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('OR TYPE',
+                          style: tt.labelSmall?.copyWith(
+                              color: cs.onSurfaceVariant.withAlpha(120),
+                              letterSpacing: 1.2)),
+                    ),
+                    Expanded(child: Divider(
+                        color: cs.outlineVariant.withAlpha(100))),
+                  ]),
+
+                  const SizedBox(height: 14),
 
                   // ── Text input area ────────────────────────────────────
                   _TextInputArea(
@@ -190,6 +293,152 @@ class _VoiceEntryScreenState extends ConsumerState<VoiceEntryScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Mic recording card ─────────────────────────────────────────────────────
+
+class _MicCard extends StatelessWidget {
+  final bool isRecording;
+  final bool isParsing;
+  final String statusMsg;
+  final ColorScheme cs;
+  final TextTheme tt;
+  final bool isDark;
+  final VoidCallback? onTap;
+
+  const _MicCard({
+    required this.isRecording,
+    required this.isParsing,
+    required this.statusMsg,
+    required this.cs,
+    required this.tt,
+    required this.isDark,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final active = isRecording;
+    final accent = active ? AppTheme.negative : AppTheme.positive;
+
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF141414) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: active
+                ? AppTheme.negative.withAlpha(120)
+                : (isDark ? const Color(0xFF242424) : const Color(0xFFE8E8E8)),
+            width: active ? 1.5 : 1,
+          ),
+          boxShadow: active
+              ? [BoxShadow(
+                  color: AppTheme.negative.withAlpha(40),
+                  blurRadius: 20,
+                  spreadRadius: 2,
+                )]
+              : isDark
+                  ? null
+                  : [BoxShadow(
+                      color: Colors.black.withAlpha(6),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    )],
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Mic icon with pulse ring when recording
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                if (active)
+                  Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppTheme.negative.withAlpha(25),
+                    ),
+                  ).animate(onPlay: (c) => c.repeat())
+                      .scale(
+                        begin: const Offset(1, 1),
+                        end: const Offset(1.4, 1.4),
+                        duration: 900.ms,
+                        curve: Curves.easeOut,
+                      )
+                      .fade(begin: 0.8, end: 0, duration: 900.ms),
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: accent.withAlpha(isDark ? 30 : 20),
+                  ),
+                  child: isParsing
+                      ? Center(
+                          child: SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: accent),
+                          ),
+                        )
+                      : Icon(
+                          active
+                              ? Icons.stop_rounded
+                              : Icons.mic_rounded,
+                          color: accent,
+                          size: 24,
+                        ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isParsing
+                        ? (statusMsg.isNotEmpty ? statusMsg : 'Analysing…')
+                        : active
+                            ? 'Recording…  Tap to stop'
+                            : 'Tap to speak',
+                    style: tt.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: isParsing
+                          ? cs.onSurfaceVariant
+                          : active
+                              ? AppTheme.negative
+                              : cs.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isParsing
+                        ? (statusMsg == 'Sending to Gemini\u2026'
+                            ? 'Gemini AI is transcribing\u2026'
+                            : 'Processing audio data\u2026')
+                        : active
+                            ? 'Say your expenses naturally'
+                            : 'Works in Safari, Chrome & Firefox',
+                    style: tt.bodySmall?.copyWith(
+                        color: cs.onSurfaceVariant.withAlpha(160)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

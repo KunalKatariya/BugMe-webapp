@@ -204,7 +204,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     ),
                     error: (_, _) => const SizedBox.shrink(),
                     data: (txns) {
-                      if (txns.isEmpty) {
+                      // Exclude goal SIP contributions from the home feed
+                      final spending = txns.where((t) => t.txnType != 'investment').toList();
+                      if (spending.isEmpty) {
                         return _EmptyHint(
                           icon: '💸',
                           message: 'No spending this month.\nTap the mic to add your first entry.',
@@ -213,7 +215,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         );
                       }
                       return _GroupedTransactions(
-                        txns: txns,
+                        txns: spending,
                         currency: currency,
                         cs: cs,
                         tt: tt,
@@ -370,7 +372,7 @@ class _HeroBackground extends StatelessWidget {
     final profileRow = Row(
       children: [
         Container(
-          width: 44, height: 44,
+          width: 56, height: 56,
           decoration: BoxDecoration(
             color: Colors.white.withAlpha(18),
             shape: BoxShape.circle,
@@ -379,10 +381,10 @@ class _HeroBackground extends StatelessWidget {
           child: userAvatar == '__logo__'
               ? ClipOval(
                   child: Image.asset('assets/images/logo.png',
-                      fit: BoxFit.cover, width: 44, height: 44))
+                      fit: BoxFit.cover, width: 56, height: 56))
               : Center(
                   child: Text(userAvatar,
-                      style: const TextStyle(fontSize: 22))),
+                      style: const TextStyle(fontSize: 26))),
         ),
         const SizedBox(width: 12),
         Column(

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -132,6 +133,65 @@ class GeminiService {
       rethrow;
     } catch (e) {
       throw GeminiException('Failed to parse expenses: $e');
+    }
+  }
+
+  // ── Audio parsing ──────────────────────────────────────────────────────────
+
+  /// Transcribes [audioBytes] (recorded via MediaRecorder) and extracts
+  /// expense entries using Gemini's multimodal API.
+  ///
+  /// [mimeType] must be one Gemini accepts: audio/webm, audio/mp4, audio/ogg.
+  Future<List<ParsedEntry>> parseAudioExpenses(
+      Uint8List audioBytes, String mimeType) async {
+    if (_multiModel == null) {
+      throw GeminiException('Gemini API key not configured.');
+    }
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    final prompt =
+        'You are a personal expense tracker assistant. The user has spoken '
+        'their expenses. Transcribe exactly what they said, then extract all '
+        'expense entries from the transcript.\n\n'
+        'Return a JSON array. Each element must have:\n'
+        '  "amount": number (always positive),\n'
+        '  "category": one of [${categories.join(', ')}],\n'
+        '  "description": brief description,\n'
+        '  "date": "YYYY-MM-DD" (use today $today if not specified)\n\n'
+        'Return ONLY the raw JSON array — no markdown, no explanation, no code '
+        'fences. If you cannot detect any expenses, return [].';
+
+    try {
+      final response = await _multiModel!.generateContent([
+        Content.multi([
+          DataPart(mimeType, audioBytes),
+          TextPart(prompt),
+        ]),
+      ]);
+
+      final text = response.text;
+      if (text == null || text.isEmpty) {
+        throw GeminiException('Empty response from Gemini.');
+      }
+
+      final clean = text
+          .replaceAll(RegExp(r'```json\s*'), '')
+          .replaceAll(RegExp(r'```\s*'), '')
+          .trim();
+
+      final decoded = jsonDecode(clean);
+      if (decoded is List) {
+        return decoded
+            .map((e) => ParsedEntry.fromJson(e as Map<String, dynamic>))
+            .toList();
+      } else if (decoded is Map<String, dynamic>) {
+        return [ParsedEntry.fromJson(decoded)];
+      }
+      throw GeminiException('Unexpected response format from Gemini.');
+    } on GeminiException {
+      rethrow;
+    } catch (e) {
+      throw GeminiException('Failed to parse audio: $e');
     }
   }
 }
